@@ -229,64 +229,89 @@ module RBI
         # merging children if the return value is :compatible.
         #: (Node left, Node right) -> Symbol
         def merge_nodes(left, right)
-          return :incompatible unless left.class == right.class
-
           merge_comments(left, right) if left.is_a?(NodeWithComments) && right.is_a?(NodeWithComments)
 
           case left
           when Class
-            right = right #: as Class
+            return :incompatible unless right.is_a?(Class)
+
             left_superclass = lookup_type(name: left.superclass_name, referrer: left)
             right_superclass = lookup_type(name: right.superclass_name, referrer: right)
             left_superclass == right_superclass ? :compatible : :incompatible
 
           when Struct
-            right = right #: as Struct
+            return :incompatible unless right.is_a?(Struct)
+
             left.members == right.members && left.keyword_init == right.keyword_init ? :compatible : :incompatible
 
           when Const
-            right = right #: as Const
+            return :incompatible unless right.is_a?(Const)
+
             left.name == right.name && left.value == right.value ? :compatible : :incompatible
 
           when Attr, Method
             right = right #: as Attr | Method
 
-            return :incompatible if left.is_a?(Method) && right.is_a?(Method) && left.params != right.params
-            return :incompatible if left.is_a?(Attr) && right.is_a?(Attr) && left.names != right.names
+            return :incompatible unless compatible_method_or_attr?(left, right)
 
             left_sigs = left.sigs.map { fully_qualify_sig(_1, referrer: left) }
             right_sigs = right.sigs.map { fully_qualify_sig(_1, referrer: right) }
-            if left_sigs.empty? || right_sigs.empty? || left_sigs == right_sigs
+            if left_sigs.empty? || right_sigs.empty?
               right_sigs.each do |sig|
                 left_sigs << sig unless left_sigs.include?(sig)
               end
               left.sigs = left_sigs
               :compatible
             else
-              :incompatible
+              left_sigs == right_sigs ? :compatible : :incompatible
             end
 
           when Mixin
-            right = right #: as Mixin
+            return :incompatible unless right.is_a?(Mixin)
+
             left_mixins = left.names.map { lookup_type(name: _1, referrer: left) }
             right_mixins = right.names.map { lookup_type(name: _1, referrer: right) }
             left_mixins == right_mixins ? :compatible : :incompatible
 
           when Helper
             # Do Helper names need to be resolved to types?
-            right = right #: as Helper
+            return :incompatible unless right.is_a?(Helper)
+
             left.name == right.name ? :compatible : :incompatible
 
           when Send
-            right = right #: as Send
+            return :incompatible unless right.is_a?(Send)
+
             left.method == right.method && left.args == right.args ? :compatible : :incompatible
 
           when TStructField
-            right = right #: as TStructField
+            return :incompatible unless right.is_a?(TStructField)
+
             left.class == right.class && left.name == right.name && left.type == right.type && left.default == right.default ? :compatible : :incompatible
 
           else
-            :compatible
+            left.class == right.class ? :compatible : :incompatible
+          end
+        end
+
+        #: ((Method | Attr) left, (Method | Attr) right) -> bool
+        def compatible_method_or_attr?(left, right)
+          if left.is_a?(Method) && right.is_a?(Method)
+            left.params == right.params
+          elsif left.is_a?(Attr) && right.is_a?(Attr)
+            left.class == right.class && left.names == right.names
+          elsif left.is_a?(Attr)
+            # flip args for convenience:
+            compatible_method_or_attr?(right, left)
+          # else left is Method && right is Attr
+          elsif left.name.end_with?("=")
+            (right.is_a?(AttrWriter) || right.is_a?(AttrAccessor)) &&
+              left.params.length == 1 &&
+              right.names.include?(left.name.chomp("=").to_sym)
+          else
+            (right.is_a?(AttrReader) || right.is_a?(AttrAccessor)) &&
+              left.params.empty? &&
+              right.names.include?(left.name.to_sym)
           end
         end
 
